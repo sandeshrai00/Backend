@@ -1,61 +1,102 @@
 import express from "express";
-import fs from "fs";
+import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Simple in-memory admin sessions (for demo - use Redis in production)
-const adminSessions = new Map();
+// MongoDB Atlas connection
+const MONGODB_URI = "mongodb+srv://vmnc-admin:mahadev1122@vmnc.fwrpurg.mongodb.net/vmnc?retryWrites=true&w=majority";
+let db = null;
 
-// Read your database JSON
-let db = JSON.parse(fs.readFileSync("./db.json"));
+async function connectDB() {
+  try {
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    db = client.db("vmnc");
+    console.log("✅ Connected to MongoDB Atlas");
+  } catch (error) {
+    console.error("❌ MongoDB connection error:", error);
+  }
+}
 
-// Simple admin authentication middleware
+connectDB();
+
+// Simple admin auth
 const requireAdmin = (req, res, next) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
-  
-  if (!token || !adminSessions.has(token)) {
-    return res.status(401).json({ error: 'Unauthorized - Admin access required' });
-  }
-  
-  next();
+  if (token === 'admin123') next();
+  else res.status(401).json({ error: 'Unauthorized' });
 };
 
-// Health check endpoint
-app.get("/api/health", (req, res) => {
+// Get all data
+app.get("/api/data", async (req, res) => {
+  try {
+    const [players, teams, tournaments, giveaways] = await Promise.all([
+      db.collection('players').find({}).toArray(),
+      db.collection('teams').find({}).toArray(),
+      db.collection('tournaments').find({}).toArray(),
+      db.collection('giveaways').find({}).toArray()
+    ]);
+
+    res.json({ players, teams, tournaments, giveaways });
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Get individual collections
+app.get("/api/players", async (req, res) => {
+  const players = await db.collection('players').find({}).toArray();
+  res.json(players);
+});
+
+app.get("/api/teams", async (req, res) => {
+  const teams = await db.collection('teams').find({}).toArray();
+  res.json(teams);
+});
+
+app.get("/api/tournaments", async (req, res) => {
+  const tournaments = await db.collection('tournaments').find({}).toArray();
+  res.json(tournaments);
+});
+
+app.get("/api/giveaways", async (req, res) => {
+  const giveaways = await db.collection('giveaways').find({}).toArray();
+  res.json(giveaways);
+});
+
+// Health check
+app.get("/api/health", async (req, res) => {
+  const counts = await Promise.all([
+    db.collection('players').countDocuments(),
+    db.collection('teams').countDocuments(),
+    db.collection('tournaments').countDocuments(),
+    db.collection('giveaways').countDocuments()
+  ]);
+  
   res.json({ 
     status: "ok", 
-    timestamp: new Date().toISOString(),
+    database: "mongodb",
     data: {
-      players: db.players.length,
-      teams: db.teams.length,
-      tournaments: db.tournaments.length,
-      giveaways: db.giveaways.length
+      players: counts[0],
+      teams: counts[1],
+      tournaments: counts[2],
+      giveaways: counts[3]
     }
   });
 });
 
-// GET endpoint to send all data
-app.get("/api/data", (req, res) => {
-  res.json(db);
-});
+// ADMIN ROUTES
 
 // Admin login endpoint
 app.post("/api/admin/login", (req, res) => {
   const { password } = req.body;
   
-  // In production, use proper password hashing and environment variables
-  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-  
-  if (password === ADMIN_PASSWORD) {
-    const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    adminSessions.set(token, { 
-      loggedInAt: new Date().toISOString(),
-      expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24 hours
-    });
-    
+  // Simple password check
+  if (password === 'admin123') {
+    const token = 'admin123'; // Simple token
     res.json({ 
       success: true, 
       token,
@@ -69,33 +110,35 @@ app.post("/api/admin/login", (req, res) => {
   }
 });
 
-// Admin logout endpoint
-app.post("/api/admin/logout", requireAdmin, (req, res) => {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  adminSessions.delete(token);
-  res.json({ success: true, message: 'Logged out successfully' });
+// Get admin data
+app.get("/api/admin/data", requireAdmin, async (req, res) => {
+  const [players, teams, tournaments, giveaways] = await Promise.all([
+    db.collection('players').find({}).toArray(),
+    db.collection('teams').find({}).toArray(),
+    db.collection('tournaments').find({}).toArray(),
+    db.collection('giveaways').find({}).toArray()
+  ]);
+  res.json({ players, teams, tournaments, giveaways });
 });
 
-// GET admin data (protected)
-app.get("/api/admin/data", requireAdmin, (req, res) => {
-  res.json(db);
-});
-
-// POST endpoint to update data (protected)
-app.post("/api/admin/update", requireAdmin, (req, res) => {
+// Update collection data
+app.post("/api/admin/update", requireAdmin, async (req, res) => {
   const { type, data } = req.body;
   
-  if (!db.hasOwnProperty(type)) {
-    return res.status(400).json({ 
-      success: false, 
-      message: `Invalid data type: ${type}` 
-    });
-  }
-  
-  db[type] = data;
-  
   try {
-    fs.writeFileSync("./db.json", JSON.stringify(db, null, 2));
+    // Clear and replace the entire collection
+    await db.collection(type).deleteMany({});
+    
+    if (data.length > 0) {
+      // Add _id to each item if not present
+      const processedData = data.map(item => ({
+        ...item,
+        _id: item._id || new ObjectId()
+      }));
+      
+      await db.collection(type).insertMany(processedData);
+    }
+    
     res.json({ 
       success: true, 
       message: `${type} updated successfully`,
@@ -104,48 +147,37 @@ app.post("/api/admin/update", requireAdmin, (req, res) => {
   } catch (error) {
     res.status(500).json({ 
       success: false, 
-      message: 'Error writing to database' 
+      message: 'Error updating data' 
     });
   }
 });
 
-// Individual update endpoints (protected)
-app.put("/api/admin/players/:id", requireAdmin, (req, res) => {
-  const { id } = req.params;
-  const updatedPlayer = req.body;
-  
-  const playerIndex = db.players.findIndex(p => p.id === id);
-  if (playerIndex === -1) {
-    return res.status(404).json({ error: 'Player not found' });
-  }
-  
-  db.players[playerIndex] = { ...db.players[playerIndex], ...updatedPlayer };
-  fs.writeFileSync("./db.json", JSON.stringify(db, null, 2));
-  
-  res.json({ success: true, player: db.players[playerIndex] });
+// Create new item
+app.post("/api/admin/:collection", requireAdmin, async (req, res) => {
+  const { collection } = req.params;
+  const data = { ...req.body, _id: new ObjectId() };
+  await db.collection(collection).insertOne(data);
+  res.json({ success: true, id: data._id });
 });
 
-app.post("/api/admin/players", requireAdmin, (req, res) => {
-  const newPlayer = {
-    id: Date.now().toString(),
-    ...req.body,
-    created_at: new Date().toISOString()
-  };
-  
-  db.players.push(newPlayer);
-  fs.writeFileSync("./db.json", JSON.stringify(db, null, 2));
-  
-  res.json({ success: true, player: newPlayer });
+app.put("/api/admin/:collection/:id", requireAdmin, async (req, res) => {
+  const { collection, id } = req.params;
+  await db.collection(collection).updateOne(
+    { _id: new ObjectId(id) },
+    { $set: req.body }
+  );
+  res.json({ success: true });
 });
 
-app.delete("/api/admin/players/:id", requireAdmin, (req, res) => {
-  const { id } = req.params;
-  
-  db.players = db.players.filter(p => p.id !== id);
-  fs.writeFileSync("./db.json", JSON.stringify(db, null, 2));
-  
-  res.json({ success: true, message: 'Player deleted' });
+app.delete("/api/admin/:collection/:id", requireAdmin, async (req, res) => {
+  const { collection, id } = req.params;
+  await db.collection(collection).deleteOne({ _id: new ObjectId(id) });
+  res.json({ success: true });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+const PORT = 5173;
+app.listen(PORT, () => {
+  console.log(`🚀 MongoDB Server running on http://localhost:${PORT}`);
+  console.log(`📊 API: http://localhost:${PORT}/api/data`);
+  console.log(`🔧 Admin: http://localhost:${PORT}/api/admin/data`);
+});
