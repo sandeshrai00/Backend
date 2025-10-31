@@ -7,7 +7,7 @@ app.use(cors());
 app.use(express.json());
 
 // MongoDB Atlas connection
-const MONGODB_URI = "mongodb+srv://vmnc-admin:mahadev1122@vmnc.fwrpurg.mongodb.net/vmnc?retryWrites=true&w=majority";
+const MONGODB_URI = "process.env.MONGODB_URI";
 let db = null;
 
 async function connectDB() {
