@@ -174,7 +174,8 @@ app.delete("/api/admin/:collection/:id", requireAdmin, async (req, res) => {
   await db.collection(collection).deleteOne({ _id: new ObjectId(id) });
   res.json({ success: true });
 });
-
+// 🟢 Keep-alive route for uptime monitoring
+app.get("/ping", (req, res) => res.send("pong"));
 // Let Render assign the port automatically
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
