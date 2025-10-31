@@ -7,7 +7,7 @@ app.use(cors());
 app.use(express.json());
 
 // MongoDB Atlas connection
-const MONGODB_URI = "process.env.MONGODB_URI";
+const MONGODB_URI = process.env.MONGODB_URI ;
 let db = null;
 
 async function connectDB() {
@@ -175,9 +175,9 @@ app.delete("/api/admin/:collection/:id", requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-const PORT = 5173;
+// Let Render assign the port automatically
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 MongoDB Server running on http://localhost:${PORT}`);
-  console.log(`📊 API: http://localhost:${PORT}/api/data`);
-  console.log(`🔧 Admin: http://localhost:${PORT}/api/admin/data`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📊 MongoDB: ${process.env.MONGODB_URI ? 'Environment' : 'Default'}`);
 });
