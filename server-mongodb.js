@@ -176,6 +176,15 @@ app.delete("/api/admin/:collection/:id", requireAdmin, async (req, res) => {
 });
 // 🟢 Keep-alive route for uptime monitoring
 app.get("/ping", (req, res) => res.send("pong"));
+
+app.get("/", (req, res) => {
+  res.send(`
+    <h1>🎯 VMNC Esports API</h1>
+    <p>Server is running fine 🚀</p>
+    <p>Use <a href="/ping">/ping</a> to test uptime monitoring.</p>
+  `);
+});
+
 // Let Render assign the port automatically
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
