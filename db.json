@@ -220,19 +220,6 @@
       "region": "International",
       "max_teams": "48",
       "registered_teams": "28"
-    },
-    {
-      "id": "10",
-      "title": "VMNC World Championship 2025",
-      "date_iso": "2025-12-15",
-      "prize": "5000",
-      "status": "Upcoming",
-      "banner_url": "/tournament-banner.jpg",
-      "description": "The ultimate Valorant Mobile World Championship featuring the best teams from around the globe competing for the grand prize.",
-      "form_link": "https://forms.google.com/world-championship-2025",
-      "region": "International",
-      "max_teams": "64",
-      "registered_teams": "35"
     }
   ],
   "giveaways": [
