@@ -21,8 +21,8 @@ async function connectDB() {
     await db.collection('liveMatches').createIndex({ status: 1 });
     await db.collection('upcomingMatches').createIndex({ date: 1 });
     await db.collection('tournaments').createIndex({ status: 1 });
-    await db.collection('verificationRequests').createIndex({ discord_id: 1 });
-    await db.collection('verificationRequests').createIndex({ status: 1 });
+    await db.collection('tournamentRegistrations').createIndex({ tournamentId: 1 });
+    await db.collection('tournamentRegistrations').createIndex({ userId: 1 });
     
   } catch (error) {
     console.error("❌ MongoDB connection error:", error);
@@ -50,17 +50,17 @@ app.use((req, res, next) => {
 // Get all data
 app.get("/api/data", async (req, res) => {
   try {
-    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests] = await Promise.all([
+    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, tournamentRegistrations] = await Promise.all([
       db.collection('players').find({}).toArray(),
       db.collection('teams').find({}).toArray(),
       db.collection('tournaments').find({}).toArray(),
       db.collection('giveaways').find({}).toArray(),
       db.collection('liveMatches').find({}).toArray(),
       db.collection('upcomingMatches').find({}).toArray(),
-      db.collection('verificationRequests').find({}).toArray()
+      db.collection('tournamentRegistrations').find({}).toArray()
     ]);
 
-    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests });
+    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, tournamentRegistrations });
   } catch (error) {
     console.error("Data fetch error:", error);
     res.status(500).json({ error: "Database error" });
@@ -104,119 +104,228 @@ app.get("/api/giveaways", async (req, res) => {
   }
 });
 
-// VERIFICATION REQUESTS ROUTES
-app.post("/api/verification-requests", async (req, res) => {
+// TOURNAMENT REGISTRATION ROUTES
+app.post("/api/tournament-registrations", async (req, res) => {
   try {
-    const { discord_username, discord_id, email, status, requested_at } = req.body;
+    const {
+      tournamentId,
+      tournamentTitle,
+      userId,
+      userEmail,
+      discordUsername,
+      teamName,
+      teamMembers,
+      captainDiscord,
+      contactEmail,
+      region,
+      experience,
+      status = 'pending'
+    } = req.body;
     
-    // Check if user already has a pending request
-    const existingRequest = await db.collection('verificationRequests').findOne({
-      discord_id,
-      status: 'pending'
+    // Check if team name is already registered for this tournament
+    const existingRegistration = await db.collection('tournamentRegistrations').findOne({
+      tournamentId,
+      teamName
     });
     
-    if (existingRequest) {
+    if (existingRegistration) {
       return res.status(400).json({ 
         success: false, 
-        message: 'You already have a pending verification request' 
+        message: 'Team name already registered for this tournament' 
       });
     }
     
-    const verificationRequest = {
+    // Check if user already registered for this tournament
+    const userExistingRegistration = await db.collection('tournamentRegistrations').findOne({
+      tournamentId,
+      userId
+    });
+    
+    if (userExistingRegistration) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'You have already registered a team for this tournament' 
+      });
+    }
+    
+    const registration = {
       _id: new ObjectId(),
-      discord_username,
-      discord_id,
-      email,
-      status: status || 'pending',
-      requested_at: requested_at || new Date().toISOString(),
-      reviewed: false,
-      reviewed_by: null,
-      reviewed_at: null
+      tournamentId,
+      tournamentTitle,
+      userId,
+      userEmail,
+      discordUsername,
+      teamName,
+      teamMembers: teamMembers.filter(member => member.trim() !== ''),
+      captainDiscord,
+      contactEmail,
+      region,
+      experience,
+      status,
+      registeredAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     
-    await db.collection('verificationRequests').insertOne(verificationRequest);
+    await db.collection('tournamentRegistrations').insertOne(registration);
+    
+    // 🎮 Send Discord Webhook Notification
+    const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+    if (DISCORD_WEBHOOK_URL) {
+      try {
+        const teamMembersList = teamMembers
+          .filter(member => member.trim() !== '')
+          .map((member, index) => `${index + 1}. ${member}`)
+          .join('\n') || 'No members listed';
+
+        await fetch(DISCORD_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            embeds: [
+              {
+                title: "🎮 New Tournament Registration",
+                color: 0xff4655,
+                fields: [
+                  { name: "🏆 Tournament", value: tournamentTitle, inline: true },
+                  { name: "👥 Team Name", value: teamName, inline: true },
+                  { name: "🎯 Region", value: region || "Not specified", inline: true },
+                  { name: "⭐ Captain", value: `${discordUsername}\n${captainDiscord}`, inline: true },
+                  { name: "📧 Contact", value: contactEmail || "Not provided", inline: true },
+                  { name: "📊 Experience", value: experience || "Not specified", inline: true },
+                  { name: "👥 Team Members", value: teamMembersList, inline: false },
+                ],
+                footer: { 
+                  text: `VMNC Esports • ${new Date().toLocaleDateString()}` 
+                },
+                timestamp: new Date().toISOString()
+              },
+            ],
+          }),
+        });
+        console.log('✅ Discord webhook sent successfully');
+      } catch (webhookError) {
+        console.error('❌ Discord webhook failed:', webhookError);
+      }
+    }
     
     res.json({ 
       success: true, 
-      message: 'Verification request submitted successfully',
-      request_id: verificationRequest._id 
+      message: 'Registration submitted successfully',
+      registrationId: registration._id 
     });
   } catch (error) {
-    console.error('Verification request error:', error);
-    res.status(500).json({ success: false, message: 'Error submitting verification request' });
+    console.error('Tournament registration error:', error);
+    res.status(500).json({ success: false, message: 'Error submitting registration' });
   }
 });
 
-// Get all verification requests (admin only)
-app.get("/api/verification-requests", requireAdmin, async (req, res) => {
+// Get registrations for a specific tournament
+app.get("/api/tournament-registrations/:tournamentId", async (req, res) => {
   try {
-    const requests = await db.collection('verificationRequests')
+    const { tournamentId } = req.params;
+    const registrations = await db.collection('tournamentRegistrations')
+      .find({ tournamentId })
+      .sort({ registeredAt: -1 })
+      .toArray();
+    res.json(registrations);
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Get user's registrations
+app.get("/api/user-registrations/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const registrations = await db.collection('tournamentRegistrations')
+      .find({ userId })
+      .sort({ registeredAt: -1 })
+      .toArray();
+    res.json(registrations);
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Get all registrations (admin only)
+app.get("/api/tournament-registrations", requireAdmin, async (req, res) => {
+  try {
+    const registrations = await db.collection('tournamentRegistrations')
       .find({})
-      .sort({ requested_at: -1 })
+      .sort({ registeredAt: -1 })
       .toArray();
-    res.json(requests);
+    res.json(registrations);
   } catch (error) {
     res.status(500).json({ error: "Database error" });
   }
 });
 
-// Get user's own verification requests
-app.get("/api/verification-requests/user/:discord_id", async (req, res) => {
-  try {
-    const { discord_id } = req.params;
-    
-    const requests = await db.collection('verificationRequests')
-      .find({ discord_id })
-      .sort({ requested_at: -1 })
-      .toArray();
-    
-    res.json(requests);
-  } catch (error) {
-    res.status(500).json({ error: "Database error" });
-  }
-});
-
-// Update verification request status (admin only)
-app.put("/api/verification-requests/:id", requireAdmin, async (req, res) => {
+// Update registration status (admin only)
+app.put("/api/tournament-registrations/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, reviewed_by } = req.body;
+    const { status } = req.body;
     
-    const result = await db.collection('verificationRequests').updateOne(
+    const result = await db.collection('tournamentRegistrations').updateOne(
       { _id: new ObjectId(id) },
       { 
         $set: { 
           status,
-          reviewed: true,
-          reviewed_by,
-          reviewed_at: new Date().toISOString()
+          updatedAt: new Date().toISOString()
         } 
       }
     );
     
     if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Verification request not found' });
+      return res.status(404).json({ success: false, message: 'Registration not found' });
     }
     
-    res.json({ success: true, message: 'Verification request updated' });
+    // Send Discord notification for status update
+    const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+    if (DISCORD_WEBHOOK_URL) {
+      const registration = await db.collection('tournamentRegistrations').findOne({ _id: new ObjectId(id) });
+      if (registration) {
+        await fetch(DISCORD_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            embeds: [
+              {
+                title: "📝 Registration Status Updated",
+                color: status === 'approved' ? 0x00ff00 : status === 'rejected' ? 0xff0000 : 0xffff00,
+                fields: [
+                  { name: "Team", value: registration.teamName, inline: true },
+                  { name: "Tournament", value: registration.tournamentTitle, inline: true },
+                  { name: "New Status", value: status.toUpperCase(), inline: true },
+                ],
+                footer: { text: `Updated by Admin • ${new Date().toLocaleString()}` },
+                timestamp: new Date().toISOString()
+              },
+            ],
+          }),
+        });
+      }
+    }
+    
+    res.json({ success: true, message: 'Registration status updated' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error updating request' });
+    res.status(500).json({ success: false, message: 'Error updating registration' });
   }
 });
 
-// Delete verification request (admin only)
-app.delete("/api/verification-requests/:id", requireAdmin, async (req, res) => {
+// Delete registration (admin only)
+app.delete("/api/tournament-registrations/:id", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await db.collection('verificationRequests').deleteOne({ _id: new ObjectId(id) });
+    const result = await db.collection('tournamentRegistrations').deleteOne({ _id: new ObjectId(id) });
     
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Verification request not found' });
+      return res.status(404).json({ success: false, message: 'Registration not found' });
     }
     
-    res.json({ success: true, message: 'Verification request deleted' });
+    res.json({ success: true, message: 'Registration deleted' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error deleting request' });
+    res.status(500).json({ success: false, message: 'Error deleting registration' });
   }
 });
 
@@ -270,7 +379,7 @@ app.get("/api/health", async (req, res) => {
       db.collection('giveaways').countDocuments(),
       db.collection('liveMatches').countDocuments(),
       db.collection('upcomingMatches').countDocuments(),
-      db.collection('verificationRequests').countDocuments()
+      db.collection('tournamentRegistrations').countDocuments()
     ]);
     
     res.json({ 
@@ -283,7 +392,7 @@ app.get("/api/health", async (req, res) => {
         giveaways: counts[3],
         liveMatches: counts[4],
         upcomingMatches: counts[5],
-        verificationRequests: counts[6]
+        tournamentRegistrations: counts[6]
       }
     });
   } catch (error) {
@@ -299,7 +408,7 @@ app.post("/api/admin/login", (req, res) => {
   
   // Simple password check
   if (password === 'admin123') {
-    const token = 'admin123'; // Simple token
+    const token = 'admin123';
     res.json({ 
       success: true, 
       token,
@@ -316,16 +425,16 @@ app.post("/api/admin/login", (req, res) => {
 // Get admin data
 app.get("/api/admin/data", requireAdmin, async (req, res) => {
   try {
-    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests] = await Promise.all([
+    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, tournamentRegistrations] = await Promise.all([
       db.collection('players').find({}).toArray(),
       db.collection('teams').find({}).toArray(),
       db.collection('tournaments').find({}).toArray(),
       db.collection('giveaways').find({}).toArray(),
       db.collection('liveMatches').find({}).toArray(),
       db.collection('upcomingMatches').find({}).toArray(),
-      db.collection('verificationRequests').find({}).toArray()
+      db.collection('tournamentRegistrations').find({}).toArray()
     ]);
-    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests });
+    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, tournamentRegistrations });
   } catch (error) {
     res.status(500).json({ error: "Database error" });
   }
@@ -337,7 +446,7 @@ app.post("/api/admin/update", requireAdmin, async (req, res) => {
   
   try {
     // Validate collection name
-    const validCollections = ['players', 'teams', 'tournaments', 'giveaways', 'liveMatches', 'upcomingMatches', 'verificationRequests'];
+    const validCollections = ['players', 'teams', 'tournaments', 'giveaways', 'liveMatches', 'upcomingMatches', 'tournamentRegistrations'];
     if (!validCollections.includes(type)) {
       return res.status(400).json({ 
         success: false, 
@@ -434,7 +543,7 @@ app.get("/api/admin/live-matches", requireAdmin, async (req, res) => {
 });
 
 app.post("/api/admin/live-matches/update", requireAdmin, async (req, res) => {
-  const { type, data } = req.body; // type: 'liveMatches' or 'upcomingMatches'
+  const { type, data } = req.body;
   
   try {
     if (!['liveMatches', 'upcomingMatches'].includes(type)) {
@@ -450,7 +559,6 @@ app.post("/api/admin/live-matches/update", requireAdmin, async (req, res) => {
       const processedData = data.map(item => ({
         ...item,
         _id: item._id || new ObjectId(),
-        // Ensure dates are properly formatted
         ...(type === 'upcomingMatches' && item.date && { date: new Date(item.date).toISOString() })
       }));
       
@@ -488,7 +596,7 @@ app.get("/", (req, res) => {
       <li><a href="/api/teams">/api/teams</a> - Teams</li>
       <li><a href="/api/tournaments">/api/tournaments</a> - Tournaments</li>
       <li><a href="/api/giveaways">/api/giveaways</a> - Giveaways</li>
-      <li><a href="/api/verification-requests">/api/verification-requests</a> - Verification Requests (Admin)</li>
+      <li><a href="/api/tournament-registrations">/api/tournament-registrations</a> - Tournament Registrations</li>
     </ul>
   `);
 });
@@ -510,4 +618,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 MongoDB: ${process.env.MONGODB_URI ? 'Environment' : 'Default'}`);
   console.log(`🌐 API Base URL: http://localhost:${PORT}`);
+  console.log(`🤖 Discord Webhook: ${process.env.DISCORD_WEBHOOK_URL ? 'Enabled' : 'Not configured'}`);
 });
