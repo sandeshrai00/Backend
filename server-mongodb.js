@@ -21,6 +21,8 @@ async function connectDB() {
     await db.collection('liveMatches').createIndex({ status: 1 });
     await db.collection('upcomingMatches').createIndex({ date: 1 });
     await db.collection('tournaments').createIndex({ status: 1 });
+    await db.collection('verificationRequests').createIndex({ discord_id: 1 });
+    await db.collection('verificationRequests').createIndex({ status: 1 });
     
   } catch (error) {
     console.error("❌ MongoDB connection error:", error);
@@ -48,16 +50,17 @@ app.use((req, res, next) => {
 // Get all data
 app.get("/api/data", async (req, res) => {
   try {
-    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches] = await Promise.all([
+    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests] = await Promise.all([
       db.collection('players').find({}).toArray(),
       db.collection('teams').find({}).toArray(),
       db.collection('tournaments').find({}).toArray(),
       db.collection('giveaways').find({}).toArray(),
       db.collection('liveMatches').find({}).toArray(),
-      db.collection('upcomingMatches').find({}).toArray()
+      db.collection('upcomingMatches').find({}).toArray(),
+      db.collection('verificationRequests').find({}).toArray()
     ]);
 
-    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches });
+    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests });
   } catch (error) {
     console.error("Data fetch error:", error);
     res.status(500).json({ error: "Database error" });
@@ -101,7 +104,123 @@ app.get("/api/giveaways", async (req, res) => {
   }
 });
 
-// LIVE MATCHES ROUTES - ADD THESE
+// VERIFICATION REQUESTS ROUTES
+app.post("/api/verification-requests", async (req, res) => {
+  try {
+    const { discord_username, discord_id, email, status, requested_at } = req.body;
+    
+    // Check if user already has a pending request
+    const existingRequest = await db.collection('verificationRequests').findOne({
+      discord_id,
+      status: 'pending'
+    });
+    
+    if (existingRequest) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'You already have a pending verification request' 
+      });
+    }
+    
+    const verificationRequest = {
+      _id: new ObjectId(),
+      discord_username,
+      discord_id,
+      email,
+      status: status || 'pending',
+      requested_at: requested_at || new Date().toISOString(),
+      reviewed: false,
+      reviewed_by: null,
+      reviewed_at: null
+    };
+    
+    await db.collection('verificationRequests').insertOne(verificationRequest);
+    
+    res.json({ 
+      success: true, 
+      message: 'Verification request submitted successfully',
+      request_id: verificationRequest._id 
+    });
+  } catch (error) {
+    console.error('Verification request error:', error);
+    res.status(500).json({ success: false, message: 'Error submitting verification request' });
+  }
+});
+
+// Get all verification requests (admin only)
+app.get("/api/verification-requests", requireAdmin, async (req, res) => {
+  try {
+    const requests = await db.collection('verificationRequests')
+      .find({})
+      .sort({ requested_at: -1 })
+      .toArray();
+    res.json(requests);
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Get user's own verification requests
+app.get("/api/verification-requests/user/:discord_id", async (req, res) => {
+  try {
+    const { discord_id } = req.params;
+    
+    const requests = await db.collection('verificationRequests')
+      .find({ discord_id })
+      .sort({ requested_at: -1 })
+      .toArray();
+    
+    res.json(requests);
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Update verification request status (admin only)
+app.put("/api/verification-requests/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, reviewed_by } = req.body;
+    
+    const result = await db.collection('verificationRequests').updateOne(
+      { _id: new ObjectId(id) },
+      { 
+        $set: { 
+          status,
+          reviewed: true,
+          reviewed_by,
+          reviewed_at: new Date().toISOString()
+        } 
+      }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Verification request not found' });
+    }
+    
+    res.json({ success: true, message: 'Verification request updated' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error updating request' });
+  }
+});
+
+// Delete verification request (admin only)
+app.delete("/api/verification-requests/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await db.collection('verificationRequests').deleteOne({ _id: new ObjectId(id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Verification request not found' });
+    }
+    
+    res.json({ success: true, message: 'Verification request deleted' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error deleting request' });
+  }
+});
+
+// LIVE MATCHES ROUTES
 app.get("/api/live-matches", async (req, res) => {
   try {
     const [liveMatches, upcomingMatches] = await Promise.all([
@@ -150,7 +269,8 @@ app.get("/api/health", async (req, res) => {
       db.collection('tournaments').countDocuments(),
       db.collection('giveaways').countDocuments(),
       db.collection('liveMatches').countDocuments(),
-      db.collection('upcomingMatches').countDocuments()
+      db.collection('upcomingMatches').countDocuments(),
+      db.collection('verificationRequests').countDocuments()
     ]);
     
     res.json({ 
@@ -162,7 +282,8 @@ app.get("/api/health", async (req, res) => {
         tournaments: counts[2],
         giveaways: counts[3],
         liveMatches: counts[4],
-        upcomingMatches: counts[5]
+        upcomingMatches: counts[5],
+        verificationRequests: counts[6]
       }
     });
   } catch (error) {
@@ -195,15 +316,16 @@ app.post("/api/admin/login", (req, res) => {
 // Get admin data
 app.get("/api/admin/data", requireAdmin, async (req, res) => {
   try {
-    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches] = await Promise.all([
+    const [players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests] = await Promise.all([
       db.collection('players').find({}).toArray(),
       db.collection('teams').find({}).toArray(),
       db.collection('tournaments').find({}).toArray(),
       db.collection('giveaways').find({}).toArray(),
       db.collection('liveMatches').find({}).toArray(),
-      db.collection('upcomingMatches').find({}).toArray()
+      db.collection('upcomingMatches').find({}).toArray(),
+      db.collection('verificationRequests').find({}).toArray()
     ]);
-    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches });
+    res.json({ players, teams, tournaments, giveaways, liveMatches, upcomingMatches, verificationRequests });
   } catch (error) {
     res.status(500).json({ error: "Database error" });
   }
@@ -215,7 +337,7 @@ app.post("/api/admin/update", requireAdmin, async (req, res) => {
   
   try {
     // Validate collection name
-    const validCollections = ['players', 'teams', 'tournaments', 'giveaways', 'liveMatches', 'upcomingMatches'];
+    const validCollections = ['players', 'teams', 'tournaments', 'giveaways', 'liveMatches', 'upcomingMatches', 'verificationRequests'];
     if (!validCollections.includes(type)) {
       return res.status(400).json({ 
         success: false, 
@@ -366,6 +488,7 @@ app.get("/", (req, res) => {
       <li><a href="/api/teams">/api/teams</a> - Teams</li>
       <li><a href="/api/tournaments">/api/tournaments</a> - Tournaments</li>
       <li><a href="/api/giveaways">/api/giveaways</a> - Giveaways</li>
+      <li><a href="/api/verification-requests">/api/verification-requests</a> - Verification Requests (Admin)</li>
     </ul>
   `);
 });
