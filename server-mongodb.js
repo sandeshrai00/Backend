@@ -107,6 +107,8 @@ app.get("/api/giveaways", async (req, res) => {
 // TOURNAMENT REGISTRATION ROUTES
 app.post("/api/tournament-registrations", async (req, res) => {
   try {
+    console.log('📨 Received registration request:', req.body);
+    
     const {
       tournamentId,
       tournamentTitle,
@@ -121,6 +123,15 @@ app.post("/api/tournament-registrations", async (req, res) => {
       experience,
       status = 'pending'
     } = req.body;
+
+    // Validate required fields
+    if (!tournamentId || !teamName || !teamMembers || !captainDiscord) {
+      console.log('❌ Missing required fields');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: tournamentId, teamName, teamMembers, captainDiscord are required' 
+      });
+    }
     
     // Check if team name is already registered for this tournament
     const existingRegistration = await db.collection('tournamentRegistrations').findOne({
@@ -129,6 +140,7 @@ app.post("/api/tournament-registrations", async (req, res) => {
     });
     
     if (existingRegistration) {
+      console.log('❌ Team name already exists');
       return res.status(400).json({ 
         success: false, 
         message: 'Team name already registered for this tournament' 
@@ -142,6 +154,7 @@ app.post("/api/tournament-registrations", async (req, res) => {
     });
     
     if (userExistingRegistration) {
+      console.log('❌ User already registered');
       return res.status(400).json({ 
         success: false, 
         message: 'You have already registered a team for this tournament' 
@@ -166,46 +179,59 @@ app.post("/api/tournament-registrations", async (req, res) => {
       updatedAt: new Date().toISOString()
     };
     
-    await db.collection('tournamentRegistrations').insertOne(registration);
+    console.log('💾 Saving registration to database');
+    const result = await db.collection('tournamentRegistrations').insertOne(registration);
+    console.log('✅ Registration saved with ID:', result.insertedId);
     
-    // 🎮 Send Discord Webhook Notification
+    // 🎮 Discord Webhook - Using global fetch (Node.js 18+)
     const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-    if (DISCORD_WEBHOOK_URL) {
+    if (DISCORD_WEBHOOK_URL && typeof fetch !== 'undefined') {
       try {
+        console.log('🤖 Attempting to send Discord webhook');
         const teamMembersList = teamMembers
           .filter(member => member.trim() !== '')
           .map((member, index) => `${index + 1}. ${member}`)
           .join('\n') || 'No members listed';
 
-        await fetch(DISCORD_WEBHOOK_URL, {
+        const webhookData = {
+          embeds: [
+            {
+              title: "🎮 New Tournament Registration",
+              color: 0xff4655,
+              fields: [
+                { name: "🏆 Tournament", value: tournamentTitle, inline: true },
+                { name: "👥 Team Name", value: teamName, inline: true },
+                { name: "🎯 Region", value: region || "Not specified", inline: true },
+                { name: "⭐ Captain", value: `${discordUsername}\n${captainDiscord}`, inline: true },
+                { name: "📧 Contact", value: contactEmail || "Not provided", inline: true },
+                { name: "📊 Experience", value: experience || "Not specified", inline: true },
+                { name: "👥 Team Members", value: teamMembersList, inline: false },
+              ],
+              footer: { 
+                text: `VMNC Esports • ${new Date().toLocaleDateString()}` 
+              },
+              timestamp: new Date().toISOString()
+            },
+          ],
+        };
+
+        const webhookResponse = await fetch(DISCORD_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            embeds: [
-              {
-                title: "🎮 New Tournament Registration",
-                color: 0xff4655,
-                fields: [
-                  { name: "🏆 Tournament", value: tournamentTitle, inline: true },
-                  { name: "👥 Team Name", value: teamName, inline: true },
-                  { name: "🎯 Region", value: region || "Not specified", inline: true },
-                  { name: "⭐ Captain", value: `${discordUsername}\n${captainDiscord}`, inline: true },
-                  { name: "📧 Contact", value: contactEmail || "Not provided", inline: true },
-                  { name: "📊 Experience", value: experience || "Not specified", inline: true },
-                  { name: "👥 Team Members", value: teamMembersList, inline: false },
-                ],
-                footer: { 
-                  text: `VMNC Esports • ${new Date().toLocaleDateString()}` 
-                },
-                timestamp: new Date().toISOString()
-              },
-            ],
-          }),
+          body: JSON.stringify(webhookData),
         });
-        console.log('✅ Discord webhook sent successfully');
+        
+        if (webhookResponse.ok) {
+          console.log('✅ Discord webhook sent successfully');
+        } else {
+          console.warn('❌ Discord webhook failed with status:', webhookResponse.status);
+        }
       } catch (webhookError) {
-        console.error('❌ Discord webhook failed:', webhookError);
+        console.error('❌ Discord webhook error:', webhookError.message);
+        // Don't fail the registration if webhook fails
       }
+    } else {
+      console.log('ℹ️  Discord webhook not configured or fetch not available');
     }
     
     res.json({ 
@@ -213,9 +239,13 @@ app.post("/api/tournament-registrations", async (req, res) => {
       message: 'Registration submitted successfully',
       registrationId: registration._id 
     });
+    
   } catch (error) {
-    console.error('Tournament registration error:', error);
-    res.status(500).json({ success: false, message: 'Error submitting registration' });
+    console.error('💥 Tournament registration error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error submitting registration: ' + error.message 
+    });
   }
 });
 
@@ -278,33 +308,6 @@ app.put("/api/tournament-registrations/:id", requireAdmin, async (req, res) => {
     
     if (result.matchedCount === 0) {
       return res.status(404).json({ success: false, message: 'Registration not found' });
-    }
-    
-    // Send Discord notification for status update
-    const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-    if (DISCORD_WEBHOOK_URL) {
-      const registration = await db.collection('tournamentRegistrations').findOne({ _id: new ObjectId(id) });
-      if (registration) {
-        await fetch(DISCORD_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            embeds: [
-              {
-                title: "📝 Registration Status Updated",
-                color: status === 'approved' ? 0x00ff00 : status === 'rejected' ? 0xff0000 : 0xffff00,
-                fields: [
-                  { name: "Team", value: registration.teamName, inline: true },
-                  { name: "Tournament", value: registration.tournamentTitle, inline: true },
-                  { name: "New Status", value: status.toUpperCase(), inline: true },
-                ],
-                footer: { text: `Updated by Admin • ${new Date().toLocaleString()}` },
-                timestamp: new Date().toISOString()
-              },
-            ],
-          }),
-        });
-      }
     }
     
     res.json({ success: true, message: 'Registration status updated' });
@@ -619,4 +622,5 @@ app.listen(PORT, () => {
   console.log(`📊 MongoDB: ${process.env.MONGODB_URI ? 'Environment' : 'Default'}`);
   console.log(`🌐 API Base URL: http://localhost:${PORT}`);
   console.log(`🤖 Discord Webhook: ${process.env.DISCORD_WEBHOOK_URL ? 'Enabled' : 'Not configured'}`);
+  console.log(`🔧 Node.js version: ${process.version}`);
 });
